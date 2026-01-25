@@ -5,7 +5,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -23,10 +22,9 @@ ADMINS = {
     MAIN_ADMIN_ID: {"role": "main", "status": "online", "login_time": 0}
 }
 
-token_counter = 0
 active_orders = {}
-payment_wait = {}   # uid -> token (for prepaid)
-tracking_wait = {}
+token_counter = 0
+prepaid_wait = {}  # user_id -> token
 
 # ================= HELPERS =================
 def generate_token():
@@ -35,20 +33,15 @@ def generate_token():
     return token_counter
 
 
-def calculate_final(item, gst):
-    return round((item * 0.5) + gst, 2)
+def final_amount(price, gst):
+    return round((price * 0.5) + gst, 2)
 
-
-def online_admins():
-    return sorted(
-        [aid for aid, a in ADMINS.items() if a["role"] == "admin" and a["status"] == "online"],
-        key=lambda x: ADMINS[x]["login_time"]
-    )
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
+    # ---- MAIN ADMIN ----
     if uid == MAIN_ADMIN_ID:
         kb = [["Add New Admin ➕", "Remove Admin ➖"], ["📊 Admin Status"]]
         await update.message.reply_text(
@@ -57,83 +50,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if uid in ADMINS:
-        kb = [["Online ✅", "Offline ❌"]]
-        await update.message.reply_text(
-            "👋 Admin Panel",
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-        )
-        return
-
-    kb = [[InlineKeyboardButton("🍔 Food Ordering", callback_data="order")]]
+    # ---- CUSTOMER ----
+    kb = [[InlineKeyboardButton("🍔 Food Ordering", callback_data="food")]]
     await update.message.reply_text(
         f"👋 Welcome to {BOT_NAME}",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# ================= BUTTONS =================
+# ================= BUTTON HANDLER =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    if q.data == "order":
+    if q.data == "food":
         context.user_data.clear()
-        context.user_data["mode"] = "order"
-        context.user_data["data"] = {}
-        await q.message.reply_text("📍 Send delivery address link:")
+        context.user_data["step"] = "address"
+        await q.message.reply_text("📍 Send delivery address:")
+        return
 
     if q.data.startswith("pay_"):
         mode = q.data.split("_")[1]
-        token = context.user_data.get("token")
-        order = active_orders.get(token)
-
-        if not order:
-            await q.message.reply_text("❌ Order expired")
-            return
-
+        token = context.user_data["token"]
+        order = active_orders[token]
         order["payment_mode"] = mode
 
         if mode == "cod":
             await send_to_admin(context, token)
-            await q.message.reply_text("✅ Order placed (Cash on Delivery)")
+            await q.message.reply_text("✅ Order placed (COD)")
         else:
-            payment_wait[q.from_user.id] = token
-            await q.message.reply_text("💳 Apni UPI ID bheje (example: name@upi)")
+            prepaid_wait[q.from_user.id] = token
+            await q.message.reply_text("💳 Apni UPI ID bheje:")
 
 # ================= MESSAGE HANDLER =================
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user = update.effective_user
-    text = update.message.text if update.message.text else ""
+    text = update.message.text
 
-    # ===== FOOD ORDER FLOW =====
-    if context.user_data.get("mode") == "order":
-        data = context.user_data.setdefault("data", {})
+    # ---------- ORDER FLOW ----------
+    if "step" in context.user_data:
+        step = context.user_data["step"]
 
-        if "address" not in data:
-            data["address"] = text
-            await update.message.reply_text("📸 Send food/card image")
+        if step == "address":
+            context.user_data["address"] = text
+            context.user_data["step"] = "price"
+            await update.message.reply_text("💵 Enter item price (min ₹149):")
             return
 
-        if "image" not in data and update.message.photo:
-            data["image"] = update.message.photo[-1].file_id
-            await update.message.reply_text("💵 Enter item price (minimum ₹149):")
-            return
-
-        if "price" not in data:
+        if step == "price":
             try:
-                data["price"] = float(text)
-                if data["price"] < 149:
-                    await update.message.reply_text("❌ Minimum item price is ₹149")
-                    return
+                price = float(text)
+                if price < 149:
+                    raise ValueError
             except:
-                await update.message.reply_text("❌ Enter valid price")
+                await update.message.reply_text("❌ Enter valid price (≥149)")
                 return
 
+            context.user_data["price"] = price
+            context.user_data["step"] = "gst"
             await update.message.reply_text("🧾 Enter GST:")
             return
 
-        if "gst" not in data:
+        if step == "gst":
             try:
                 gst = float(text)
             except:
@@ -141,129 +118,58 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             token = generate_token()
-            final = calculate_final(data["price"], gst)
-            admins = online_admins()
-
-            if not admins:
-                await update.message.reply_text("❌ No admin online")
-                return
+            final = final_amount(context.user_data["price"], gst)
 
             active_orders[token] = {
-                "status": "pending",
-                "admins": admins,
-                "index": 0,
-                "assigned_admin": admins[0],
-                "payment_mode": None,
                 "customer": {
                     "id": uid,
-                    "name": user.full_name,
-                    "address": data["address"],
-                    "image": data["image"],
+                    "address": context.user_data["address"],
                     "final": final,
                     "upi": None
-                }
+                },
+                "payment_mode": None
             }
 
             context.user_data.clear()
             context.user_data["token"] = token
 
             kb = [
-                [InlineKeyboardButton("💵 Cash on Delivery", callback_data="pay_cod")],
-                [InlineKeyboardButton("💳 Prepaid", callback_data="pay_prepaid")]
+                [InlineKeyboardButton("💵 COD", callback_data="pay_cod")],
+                [InlineKeyboardButton("💳 PREPAID", callback_data="pay_prepaid")]
             ]
 
             await update.message.reply_text(
-                f"🎟 Token {token}\n💰 Total: ₹{final}\n\nSelect payment mode:",
+                f"🎟 Token: {token}\n💰 Total: ₹{final}\n\nSelect payment mode:",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
             return
 
-    # ===== USER ENTERS UPI ID (PREPAID) =====
-    if uid in payment_wait and update.message.text and "@" in text:
-        token = payment_wait[uid]
+    # ---------- PREPAID UPI ----------
+    if uid in prepaid_wait:
+        token = prepaid_wait.pop(uid)
         active_orders[token]["customer"]["upi"] = text
-        await update.message.reply_text("📸 Ab payment screenshot bheje")
-        return
-
-    # ===== PAYMENT SCREENSHOT =====
-    if uid in payment_wait and update.message.photo:
-        token = payment_wait.pop(uid)
         await send_to_admin(context, token)
-        await update.message.reply_text("✅ Payment received, order sent to admin")
+        await update.message.reply_text("✅ Order placed (PREPAID)")
         return
 
-# ================= ADMIN FLOW =================
+# ================= SEND TO ADMIN =================
 async def send_to_admin(context, token):
     order = active_orders[token]
-    admin = order["assigned_admin"]
     cust = order["customer"]
 
-    kb = [
-        [InlineKeyboardButton("Accept ✅", callback_data=f"accept_{token}")],
-        [InlineKeyboardButton("Reject ❌", callback_data=f"reject_{token}")]
-    ]
-
-    caption = (
+    msg = (
         f"📦 NEW ORDER\n"
-        f"👤 {cust['name']}\n"
-        f"🆔 {cust['id']}\n"
-        f"📍 {cust['address']}\n"
+        f"🆔 User: {cust['id']}\n"
+        f"📍 Address: {cust['address']}\n"
         f"🎟 Token: {token}\n"
         f"💰 Amount: ₹{cust['final']}\n"
         f"💳 Payment: {order['payment_mode'].upper()}\n"
     )
 
     if order["payment_mode"] == "prepaid":
-        caption += f"👛 User UPI: {cust.get('upi', 'N/A')}\n"
+        msg += f"👛 UPI: {cust['upi']}\n"
 
-    await context.bot.send_photo(
-        admin,
-        cust["image"],
-        caption=caption,
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-    asyncio.create_task(admin_timeout(context, token))
-
-
-async def admin_timeout(context, token):
-    await asyncio.sleep(60)
-    order = active_orders.get(token)
-    if order and order["status"] == "pending":
-        order["index"] += 1
-        if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][order["index"]]
-            await send_to_admin(context, token)
-        else:
-            del active_orders[token]
-
-# ================= CALLBACKS =================
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    if "_" not in q.data:
-        return
-
-    action, token = q.data.split("_", 1)
-    token = int(token)
-    order = active_orders.get(token)
-
-    if not order:
-        await q.message.reply_text("❌ Order expired")
-        return
-
-    if action == "accept":
-        order["status"] = "accepted"
-        await context.bot.send_message(order["customer"]["id"], "✅ Order accepted")
-
-    elif action == "reject":
-        order["index"] += 1
-        if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][order["index"]]
-            await send_to_admin(context, token)
-        else:
-            del active_orders[token]
+    await context.bot.send_message(MAIN_ADMIN_ID, msg)
 
 # ================= MAIN =================
 if __name__ == "__main__":
@@ -271,8 +177,7 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(CallbackQueryHandler(callbacks))
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, messages))
+    app.add_handler(MessageHandler(filters.TEXT, messages))
 
     print("🚀 Bot running...")
     app.run_polling()
