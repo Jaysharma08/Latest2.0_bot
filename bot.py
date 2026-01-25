@@ -35,10 +35,12 @@ def generate_token():
 
 
 def calculate_final(item, gst):
+    """Calculates 50% of item + GST"""
     return round((item * 0.5) + gst, 2)
 
 
 def online_admins():
+    """Return list of online admin IDs sorted by login time"""
     return sorted(
         [aid for aid, a in ADMINS.items() if a["role"] == "admin" and a["status"] == "online"],
         key=lambda x: ADMINS[x]["login_time"]
@@ -74,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# ================= BUTTONS =================
+# ================= BUTTON HANDLER =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -97,7 +99,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finalize_order(context, q.from_user.id)
             await q.message.reply_text("✅ Order placed (COD)")
         else:
-            await q.message.reply_text("💳 Enter your UPI ID (example: name@upi)")
+            await q.message.reply_text("💳 Enter your UPI ID (any format, must contain @)")
 
 # ================= MESSAGE HANDLER =================
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,10 +124,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for aid, info in ADMINS.items():
                 if info["role"] == "admin":
                     (online if info["status"] == "online" else offline).append(str(aid))
-
             msg = "📊 *Admin Status*\n\n"
-            msg += f"🟢 Online ({len(online)})\n" + ("\n".join(online) or "None")
-            msg += f"\n\n🔴 Offline ({len(offline)})\n" + ("\n".join(offline) or "None")
+            msg += f"🟢 Online ({len(online)})\n" + ("\n".join(f"• `{i}`" for i in online) or "None")
+            msg += f"\n\n🔴 Offline ({len(offline)})\n" + ("\n".join(f"• `{i}`" for i in offline) or "None")
             await update.message.reply_text(msg, parse_mode="Markdown")
             return
 
@@ -155,7 +156,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ===== PRICE CHECK =====
     if context.user_data.get("mode") == "price":
         data = context.user_data["data"]
-
         if "item" not in data:
             try:
                 item = float(text)
@@ -208,13 +208,10 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 gst = float(text)
                 data["final"] = calculate_final(data["item"], gst)
-
-                kb = [
-                    [
-                        InlineKeyboardButton("💵 COD", callback_data="cod"),
-                        InlineKeyboardButton("💳 PREPAID", callback_data="prepaid"),
-                    ]
-                ]
+                kb = [[
+                    InlineKeyboardButton("💵 COD", callback_data="cod"),
+                    InlineKeyboardButton("💳 PREPAID", callback_data="prepaid")
+                ]]
                 await update.message.reply_text(
                     f"💰 Total: ₹{data['final']}\nChoose payment mode:",
                     reply_markup=InlineKeyboardMarkup(kb)
@@ -223,11 +220,14 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Enter valid GST")
             return
 
-    # ===== PREPAID UPI =====
-    if context.user_data.get("payment_mode") == "prepaid" and "@" in text:
-        context.user_data["data"]["upi"] = text
-        await finalize_order(context, uid)
-        await update.message.reply_text("✅ Order placed (PREPAID)")
+    # ===== PREPAID UPI (only @ check) =====
+    if context.user_data.get("payment_mode") == "prepaid":
+        if "@" in text:
+            context.user_data["data"]["upi"] = text
+            await finalize_order(context, uid)
+            await update.message.reply_text("✅ Order placed (PREPAID)")
+        else:
+            await update.message.reply_text("❌ Invalid UPI ID (must contain @)")
         return
 
 # ================= FINALIZE ORDER =================
@@ -278,7 +278,7 @@ async def send_to_admin(context, token):
 
     kb = [
         [InlineKeyboardButton("Accept ✅", callback_data=f"accept_{token}")],
-        [InlineKeyboardButton("Reject ❌", callback_data=f"reject_{token}")],
+        [InlineKeyboardButton("Reject ❌", callback_data=f"reject_{token}")]
     ]
 
     await context.bot.send_photo(
@@ -305,7 +305,6 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "accept":
         await q.message.reply_text("✅ Order accepted")
-
     elif action == "reject":
         del active_orders[token]
         await q.message.reply_text("❌ Order rejected")
