@@ -96,7 +96,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("✅ Order placed (COD)")
         else:
             await q.message.reply_text(
-                "💳 Enter your UPI ID (must contain @)",
+                "💳 Enter your UPI ID (any text accepted)",
                 reply_markup=ReplyKeyboardRemove()
             )
 
@@ -235,12 +235,10 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ===== PREPAID UPI =====
     if context.user_data.get("payment_mode") == "prepaid":
         upi = text.strip()
-        if "@" in upi:  # ✅ Only check for @
-            context.user_data["data"]["upi"] = upi
-            await finalize_order(context, uid)
-            await update.message.reply_text("✅ Order placed (PREPAID)")
-        else:
-            await update.message.reply_text("❌ Invalid UPI ID (must contain @)")
+        # ✅ Accept any UPI text
+        context.user_data["data"]["upi"] = upi
+        await finalize_order(context, uid)
+        await update.message.reply_text("✅ Order placed (PREPAID)")
         return
 
 # ================= FINALIZE ORDER =================
