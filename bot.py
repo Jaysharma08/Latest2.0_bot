@@ -205,7 +205,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if "image" not in data and update.message.photo:
             data["image"] = update.message.photo[-1].file_id
-            await update.message.reply_text("💵 Enter item price:")
+            await update.message.reply_text("💵 Enter item price (minimum ₹149):")
             return
 
         if "price" not in data:
