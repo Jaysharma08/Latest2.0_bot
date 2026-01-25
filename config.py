@@ -4,8 +4,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
 
 MIN_ORDER = 149
-DISCOUNT = 0
-BOT_NAME = "Latest Food Bot"
+DISCOUNT = 0.5
+BOT_NAME = "Swiggy Food Bot"
 
 
 
@@ -88,5 +88,6 @@ BOT_NAME = "Latest Food Bot"
 # MIN_ORDER = float(os.environ.get("MIN_ORDER", "149"))
 # DISCOUNT = float(os.environ.get("DISCOUNT", "0.5"))
 # BOT_NAME = os.environ.get("BOT_NAME", "FoodBot")
+
 
 
