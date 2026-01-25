@@ -174,6 +174,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "item" not in data:
             try:
                 data["item"] = float(text)
+                if data["item"] < 149:
+                    await update.message.reply_text("❌ Minimum item total is ₹149")
+                    return
             except:
                 await update.message.reply_text("❌ Enter valid amount")
                 return
@@ -208,6 +211,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "price" not in data:
             try:
                 data["price"] = float(text)
+                if data["price"] < 149:
+                    await update.message.reply_text("❌ Minimum item total is ₹149")
+                    return
             except:
                 await update.message.reply_text("❌ Enter valid price")
                 return
@@ -294,7 +300,7 @@ async def admin_timeout(context, token):
     if order and order["status"] == "pending":
         order["index"] += 1
         if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][order["index"]]
+            order["assigned_admin"] = order["admins"][order["index]]
             await send_to_admin(context, token)
         else:
             del active_orders[token]
