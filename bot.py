@@ -90,7 +90,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("✅ Order placed (COD)")
         else:
             await q.message.reply_text(
-                "💳 Enter your UPI ID ",
+                "Enter UPI ID",
                 reply_markup=ReplyKeyboardRemove()
             )
 
@@ -216,7 +216,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ===== PREPAID UPI =====
     if context.user_data.get("payment_mode") == "prepaid":
         upi = text.strip()
-        context.user_data["data"]["upi"] = upi  # ✅ any UPI accepted
+        context.user_data["data"]["upi"] = upi  # ✅ Accept anything
         await finalize_order(context, uid)
         await update.message.reply_text("✅ Order placed (PREPAID)")
         return
@@ -254,7 +254,7 @@ async def send_to_admin(context, token):
     order = active_orders[token]
     cust = order["customer"]
     if order["status"] != "pending":
-        return  # expired order
+        return
     caption = (
         f"📦 NEW ORDER\n"
         f"👤 {cust['name']}\n"
@@ -309,8 +309,6 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order["status"] = "accepted"
         cust_id = order["customer"]["id"]
         await context.bot.send_message(cust_id, "✅ Your order has been accepted by admin")
-        kb = [[InlineKeyboardButton("Complete Order 📦", callback_data=f"complete_{token}")]]
-        await q.message.reply_text("Order accepted", reply_markup=InlineKeyboardMarkup(kb))
     elif action == "reject":
         order["index"] += 1
         if order["index"] < len(order["admins"]):
