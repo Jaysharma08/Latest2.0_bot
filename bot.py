@@ -300,7 +300,7 @@ async def admin_timeout(context, token):
     if order and order["status"] == "pending":
         order["index"] += 1
         if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][order["index]]
+            order["assigned_admin"] = order["admins"][order["index"]]  # <-- FIXED HERE
             await send_to_admin(context, token)
         else:
             del active_orders[token]
