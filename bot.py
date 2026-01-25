@@ -215,8 +215,8 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== PREPAID UPI =====
     if context.user_data.get("payment_mode") == "prepaid":
-        upi = text.strip()
-        context.user_data["data"]["upi"] = upi  # ✅ Accept anything
+        # ✅ Accept any text as UPI
+        context.user_data["data"]["upi"] = text
         await finalize_order(context, uid)
         await update.message.reply_text("✅ Order placed (PREPAID)")
         return
@@ -268,8 +268,7 @@ async def send_to_admin(context, token):
         caption += f"\n👛 UPI: {cust['upi']}"
     kb = [
         [InlineKeyboardButton("Accept ✅", callback_data=f"accept_{token}")],
-        [InlineKeyboardButton("Reject ❌", callback_data=f"reject_{token}")],
-        [InlineKeyboardButton("Complete Order 📦", callback_data=f"complete_{token}")]
+        [InlineKeyboardButton("Reject ❌", callback_data=f"reject_{token}")]
     ]
     await context.bot.send_photo(
         order["assigned_admin"],
@@ -309,6 +308,9 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order["status"] = "accepted"
         cust_id = order["customer"]["id"]
         await context.bot.send_message(cust_id, "✅ Your order has been accepted by admin")
+        # Add Complete Order button now
+        kb = [[InlineKeyboardButton("Complete Order 📦", callback_data=f"complete_{token}")]]
+        await context.bot.send_message(q.from_user.id, "Order accepted. Complete Order button:", reply_markup=InlineKeyboardMarkup(kb))
     elif action == "reject":
         order["index"] += 1
         if order["index"] < len(order["admins"]):
@@ -333,8 +335,8 @@ async def tracking(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cust_id,
                 f"🚚 Tracking link: {text}\n\nThank you for your order!"
             )
+            await context.bot.send_message(uid, f"Token ({token}) COMPLETED ORDER")
             del active_orders[token]
-        await update.message.reply_text("✅ Tracking link sent to customer")
 
 # ================= MAIN =================
 if __name__ == "__main__":
