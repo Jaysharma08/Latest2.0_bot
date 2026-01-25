@@ -25,7 +25,6 @@ ADMINS = {
 
 token_counter = 0
 active_orders = {}
-payment_wait = {}
 tracking_wait = {}
 
 # ================= HELPERS =================
@@ -35,8 +34,7 @@ def generate_token():
     return token_counter
 
 def calculate_final(item, gst):
-    # 50% of item total + GST
-    return round((item * 0.5) + gst, 2)
+    return round((item * 0.5) + gst, 2)  # 50% of item + GST
 
 def online_admins():
     return sorted(
@@ -57,6 +55,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if uid in ADMINS:
+        ADMINS[uid]["login_time"] = asyncio.get_event_loop().time()
         kb = [["Online ✅", "Offline ❌"]]
         await update.message.reply_text(
             "👋 Admin Panel",
@@ -77,28 +76,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    data = q.data
 
-    if data == "order":
+    if q.data == "order":
         context.user_data.clear()
         context.user_data["mode"] = "order"
         context.user_data["data"] = {}
         await q.message.reply_text("📍 Send delivery address link:")
 
-    elif data == "price":
+    elif q.data == "price":
         context.user_data.clear()
         context.user_data["mode"] = "price"
         context.user_data["data"] = {}
         await q.message.reply_text("💵 Enter item total (minimum ₹149):")
 
-    elif data in ["cod", "prepaid"]:
-        context.user_data["payment_mode"] = data
-        if data == "cod":
+    elif q.data in ["cod", "prepaid"]:
+        context.user_data["payment_mode"] = q.data
+        if q.data == "cod":
             await finalize_order(context, q.from_user.id)
             await q.message.reply_text("✅ Order placed (COD)")
         else:
-            await q.message.reply_text("💳 Enter your UPI ID (example: name@upi)",
-                                       reply_markup=ReplyKeyboardRemove())
+            await q.message.reply_text(
+                "💳 Enter your UPI ID (must contain @)",
+                reply_markup=ReplyKeyboardRemove()
+            )
 
 # ================= MESSAGE HANDLER =================
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,6 +123,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for aid, info in ADMINS.items():
                 if info["role"] == "admin":
                     (online if info["status"] == "online" else offline).append(str(aid))
+
             msg = "📊 *Admin Status*\n\n"
             msg += f"🟢 Online ({len(online)})\n" + ("\n".join(online) or "None")
             msg += f"\n\n🔴 Offline ({len(offline)})\n" + ("\n".join(offline) or "None")
@@ -152,21 +153,18 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
-    # ===== ADMIN ONLINE/OFFLINE =====
+    # ===== ADMIN STATUS =====
     if uid in ADMINS and ADMINS[uid]["role"] == "admin":
-        if text == "Online ✅":
-            ADMINS[uid]["status"] = "online"
+        if text in ["Online ✅", "Offline ❌"]:
+            ADMINS[uid]["status"] = "online" if "Online" in text else "offline"
             ADMINS[uid]["login_time"] = asyncio.get_event_loop().time()
-            await update.message.reply_text("✅ You are now ONLINE")
-            return
-        elif text == "Offline ❌":
-            ADMINS[uid]["status"] = "offline"
-            await update.message.reply_text("❌ You are now OFFLINE")
+            await update.message.reply_text("✅ Status updated", reply_markup=ReplyKeyboardRemove())
             return
 
     # ===== PRICE CHECK =====
     if context.user_data.get("mode") == "price":
         data = context.user_data["data"]
+
         if "item" not in data:
             try:
                 item = float(text)
@@ -178,6 +176,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 await update.message.reply_text("❌ Enter valid amount")
             return
+
         if "gst" not in data:
             try:
                 gst = float(text)
@@ -218,6 +217,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 gst = float(text)
                 data["final"] = calculate_final(data["item"], gst)
+
                 kb = [
                     [
                         InlineKeyboardButton("💵 COD", callback_data="cod"),
@@ -235,7 +235,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ===== PREPAID UPI =====
     if context.user_data.get("payment_mode") == "prepaid":
         upi = text.strip()
-        if "@" in upi:
+        if "@" in upi:  # ✅ Only check for @
             context.user_data["data"]["upi"] = upi
             await finalize_order(context, uid)
             await update.message.reply_text("✅ Order placed (PREPAID)")
@@ -248,8 +248,9 @@ async def finalize_order(context, uid):
     data = context.user_data["data"]
     token = generate_token()
     admins = online_admins()
+
     if not admins:
-        await context.bot.send_message(uid, "❌ No admin online. Try later.")
+        await context.bot.send_message(uid, "❌ No admin online, try later")
         return
 
     chat = await context.bot.get_chat(uid)
@@ -271,6 +272,8 @@ async def finalize_order(context, uid):
     }
 
     await send_to_admin(context, token)
+    await context.bot.send_message(uid, "✅ Your order has been sent to admin")
+    context.user_data.clear()
 
 # ================= ADMIN FLOW =================
 async def send_to_admin(context, token):
@@ -286,6 +289,7 @@ async def send_to_admin(context, token):
         f"💰 ₹{cust['final']}\n"
         f"💳 {cust['payment']}"
     )
+
     if cust.get("upi"):
         caption += f"\n👛 UPI: {cust['upi']}"
 
@@ -298,10 +302,10 @@ async def send_to_admin(context, token):
         order["assigned_admin"],
         cust["image"],
         caption=caption,
-        reply_markup=InlineKeyboardMarkup(kb),
+        reply_markup=InlineKeyboardMarkup(kb)
     )
 
-    # Admin auto-rotation after 60s
+    # Auto assign to next admin if ignored
     asyncio.create_task(admin_timeout(context, token))
 
 async def admin_timeout(context, token):
@@ -315,12 +319,13 @@ async def admin_timeout(context, token):
         else:
             del active_orders[token]
 
-# ================= CALLBACKS =================
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ADMIN CALLBACKS =================
+async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if "_" not in q.data:
         return
+
     action, token = q.data.split("_")
     token = int(token)
     order = active_orders.get(token)
@@ -348,26 +353,32 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("🚚 Send tracking link:")
 
 # ================= TRACKING =================
-async def handle_tracking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def tracking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip() if update.message.text else ""
+
     if uid in tracking_wait:
         token = tracking_wait.pop(uid)
         order = active_orders.get(token)
         if order:
             cust_id = order["customer"]["id"]
-            await context.bot.send_message(cust_id, f"🚚 Tracking Link: {text}\n✅ Thank you for your order!")
+            await context.bot.send_message(
+                cust_id,
+                f"🚚 Tracking link: {text}\n\nThank you for your order!"
+            )
             del active_orders[token]
+        await update.message.reply_text("✅ Tracking link sent to customer")
+        return
 
 # ================= MAIN =================
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(CallbackQueryHandler(buttons, pattern="^(order|price|cod|prepaid)$"))
+    app.add_handler(CallbackQueryHandler(admin_callbacks, pattern="^(accept|reject|complete)_"))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, messages))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tracking))
+    app.add_handler(MessageHandler(filters.TEXT, tracking))
 
     print("🚀 Bot running...")
     app.run_polling()
