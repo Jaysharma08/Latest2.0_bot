@@ -105,19 +105,28 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip() if update.message.text else ""
 
-    # ===== TRACKING =====
+    # ===== TRACKING (SEND COMPLETE MSG TO ADMIN) =====
     if uid in tracking_wait:
         token = tracking_wait.pop(uid)
         order = active_orders.get(token)
         if order:
+            cust_id = order["customer"]["id"]
+
             await context.bot.send_message(
-                order["customer"]["id"],
-                f"🚚 Tracking Link:\n{text}\n\n🙏 Thanks for ordering with {BOT_NAME}"
+                cust_id,
+                f"🚚 Your tracking link:\n{text}\n\n🙏 Thank you for ordering with {BOT_NAME}!"
             )
+
+            # ✅ NEW: CONFIRM TO ADMIN
+            await context.bot.send_message(
+                uid,
+                f"✅ Token {token} completed"
+            )
+
             del active_orders[token]
         return
 
-    # ===== PRICE CHECKING FLOW (FIXED) =====
+    # ===== PRICE CHECKING =====
     if context.user_data.get("mode") == "price":
         data = context.user_data["data"]
 
@@ -136,6 +145,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "gst" not in data:
             try:
                 gst = float(text)
+                data["gst"] = gst
                 final = calculate_final(data["item"], gst)
                 await update.message.reply_text(
                     f"💰 Final Price:\n"
@@ -203,7 +213,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Status updated", reply_markup=ReplyKeyboardRemove())
             return
 
-    # ===== FOOD ORDER FLOW =====
+    # ===== FOOD ORDER =====
     if context.user_data.get("mode") == "order":
         data = context.user_data["data"]
 
@@ -232,6 +242,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "gst" not in data:
             try:
                 gst = float(text)
+                data["gst"] = gst   # ✅ FIX
                 data["final"] = calculate_final(data["item"], gst)
                 kb = [[
                     InlineKeyboardButton("💵 COD", callback_data="cod"),
@@ -247,7 +258,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ===== PREPAID UPI (ACCEPT ANY TEXT) =====
         if context.user_data.get("payment_mode") == "prepaid" and "upi" not in data:
-            data["upi"] = text   # ANY TEXT ACCEPTED
+            data["upi"] = text
             await finalize_order(context, uid)
             await update.message.reply_text("✅ Order placed (PREPAID)")
             return
@@ -281,33 +292,8 @@ async def finalize_order(context, uid):
     }
 
     await send_to_admin(context, token)
-    await context.bot.send_message(uid, "✅ Order sent to admin")
+    await context.bot.send_message(uid, "✅ Your order has been sent to admin")
     context.user_data.clear()
-
-    asyncio.create_task(auto_forward(context, token))
-
-# ================= AUTO FORWARD =================
-async def auto_forward(context, token):
-    while True:
-        await asyncio.sleep(60)
-        order = active_orders.get(token)
-        if not order:
-            return
-
-        if order["status"] == "accepted":
-            return
-
-        order["index"] += 1
-        if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][order["index"]]
-            await send_to_admin(context, token)
-        else:
-            await context.bot.send_message(
-                order["customer"]["id"],
-                "❌ Sorry, your order expired (no admin accepted)."
-            )
-            del active_orders[token]
-            return
 
 # ================= SEND TO ADMIN =================
 async def send_to_admin(context, token):
