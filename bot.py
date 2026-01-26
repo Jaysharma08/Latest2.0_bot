@@ -1,5 +1,6 @@
 # ================= IMPORTS =================
 import asyncio
+import re
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -49,7 +50,6 @@ def online_admins():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
-    # ===== MAIN ADMIN =====
     if uid == MAIN_ADMIN_ID:
         kb = [["Add New Admin ➕", "Remove Admin ➖"], ["📊 Admin Status"]]
         await update.message.reply_text(
@@ -58,7 +58,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== ADMIN =====
     if uid in ADMINS:
         ADMINS[uid]["login_time"] = asyncio.get_event_loop().time()
         kb = [["Online ✅", "Offline ❌"]]
@@ -68,7 +67,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== USER =====
     kb = [
         [InlineKeyboardButton("💰 Price Checking", callback_data="price")],
         [InlineKeyboardButton("🍔 Food Ordering", callback_data="order")]
@@ -101,7 +99,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finalize_order(context, q.from_user.id)
             await q.message.reply_text("✅ Order placed (COD)")
         else:
-            await q.message.reply_text("👛 Enter UPI ID (any text allowed):")
+            await q.message.reply_text("👛 Enter UPI ID:")
 
 # ================= MESSAGE HANDLER =================
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -217,8 +215,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Enter valid GST")
             return
 
+        # ===== PREPAID UPI (ACCEPT ANY TEXT - ONLY CHANGE) =====
         if context.user_data.get("payment_mode") == "prepaid" and "upi" not in data:
-            data["upi"] = text
+            data["upi"] = text   # <-- ACCEPT ANY UPI / ANY TEXT
             await finalize_order(context, uid)
             await update.message.reply_text("✅ Order placed (PREPAID)")
             return
