@@ -105,24 +105,16 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip() if update.message.text else ""
 
-    # ===== TRACKING (SEND COMPLETE MSG TO ADMIN) =====
+    # ===== TRACKING =====
     if uid in tracking_wait:
         token = tracking_wait.pop(uid)
         order = active_orders.get(token)
         if order:
-            cust_id = order["customer"]["id"]
-
             await context.bot.send_message(
-                cust_id,
+                order["customer"]["id"],
                 f"🚚 Your tracking link:\n{text}\n\n🙏 Thank you for ordering with {BOT_NAME}!"
             )
-
-            # ✅ NEW: CONFIRM TO ADMIN
-            await context.bot.send_message(
-                uid,
-                f"✅ Token {token} completed"
-            )
-
+            await context.bot.send_message(uid, f"✅ Token {token} completed")
             del active_orders[token]
         return
 
@@ -242,7 +234,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "gst" not in data:
             try:
                 gst = float(text)
-                data["gst"] = gst   # ✅ FIX
+                data["gst"] = gst
                 data["final"] = calculate_final(data["item"], gst)
                 kb = [[
                     InlineKeyboardButton("💵 COD", callback_data="cod"),
@@ -256,7 +248,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Enter valid GST")
             return
 
-        # ===== PREPAID UPI (ACCEPT ANY TEXT) =====
         if context.user_data.get("payment_mode") == "prepaid" and "upi" not in data:
             data["upi"] = text
             await finalize_order(context, uid)
@@ -280,6 +271,7 @@ async def finalize_order(context, uid):
         "admins": admins,
         "index": 0,
         "assigned_admin": admins[0],
+        "forwarded": False,
         "customer": {
             "id": uid,
             "name": chat.full_name,
@@ -292,8 +284,24 @@ async def finalize_order(context, uid):
     }
 
     await send_to_admin(context, token)
-    await context.bot.send_message(uid, "✅ Your order has been sent to admin")
     context.user_data.clear()
+
+    asyncio.create_task(auto_forward_after_1min(context, token))
+
+# ================= AUTO FORWARD AFTER 1 MIN =================
+async def auto_forward_after_1min(context, token):
+    await asyncio.sleep(60)
+
+    order = active_orders.get(token)
+    if not order:
+        return
+
+    if order["status"] == "pending" and not order["forwarded"]:
+        order["index"] = 1
+        if order["index"] < len(order["admins"]):
+            order["assigned_admin"] = order["admins"][1]
+            order["forwarded"] = True
+            await send_to_admin(context, token)
 
 # ================= SEND TO ADMIN =================
 async def send_to_admin(context, token):
@@ -339,7 +347,7 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if q.from_user.id != order["assigned_admin"]:
-        await q.message.reply_text("❌ Order expired or reassigned")
+        await q.message.reply_text("❌ Order expired / already forwarded")
         return
 
     if action == "accept":
@@ -349,12 +357,12 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Order accepted:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif action == "reject":
+        order["forwarded"] = True
         order["index"] += 1
         if order["index"] < len(order["admins"]):
             order["assigned_admin"] = order["admins"][order["index"]]
             await send_to_admin(context, token)
         else:
-            await context.bot.send_message(order["customer"]["id"], "❌ Order rejected by all admins.")
             del active_orders[token]
 
     elif action == "complete":
