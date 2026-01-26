@@ -1,6 +1,5 @@
 # ================= IMPORTS =================
 import asyncio
-import re
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -118,6 +117,37 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del active_orders[token]
         return
 
+    # ===== PRICE CHECKING FLOW (FIXED) =====
+    if context.user_data.get("mode") == "price":
+        data = context.user_data["data"]
+
+        if "item" not in data:
+            try:
+                item = float(text)
+                if item < 149:
+                    await update.message.reply_text("❌ Minimum item total is ₹149")
+                    return
+                data["item"] = item
+                await update.message.reply_text("🧾 Enter GST:")
+            except:
+                await update.message.reply_text("❌ Enter valid amount")
+            return
+
+        if "gst" not in data:
+            try:
+                gst = float(text)
+                final = calculate_final(data["item"], gst)
+                await update.message.reply_text(
+                    f"💰 Final Price:\n"
+                    f"Item: ₹{data['item']}\n"
+                    f"GST: ₹{gst}\n"
+                    f"➡️ Total: ₹{final}"
+                )
+                context.user_data.clear()
+            except:
+                await update.message.reply_text("❌ Enter valid GST")
+            return
+
     # ===== MAIN ADMIN CONTROLS =====
     if uid == MAIN_ADMIN_ID:
         if text == "Add New Admin ➕":
@@ -215,9 +245,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Enter valid GST")
             return
 
-        # ===== PREPAID UPI (ACCEPT ANY TEXT - ONLY CHANGE) =====
+        # ===== PREPAID UPI (ACCEPT ANY TEXT) =====
         if context.user_data.get("payment_mode") == "prepaid" and "upi" not in data:
-            data["upi"] = text   # <-- ACCEPT ANY UPI / ANY TEXT
+            data["upi"] = text   # ANY TEXT ACCEPTED
             await finalize_order(context, uid)
             await update.message.reply_text("✅ Order placed (PREPAID)")
             return
