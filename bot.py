@@ -26,6 +26,7 @@ ADMINS = {
 token_counter = 0
 active_orders = {}
 tracking_wait = {}
+
 ADMIN_POINTER = 0
 
 
@@ -132,6 +133,37 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del active_orders[token]
         return
 
+    # ===== PRICE CHECKING =====
+    if context.user_data.get("mode") == "price":
+        data = context.user_data["data"]
+
+        if "item" not in data:
+            try:
+                item = float(text)
+                if item < 149:
+                    await update.message.reply_text("❌ Minimum item total is ₹149")
+                    return
+                data["item"] = item
+                await update.message.reply_text("🧾 Enter GST:")
+            except:
+                await update.message.reply_text("❌ Enter valid amount")
+            return
+
+        if "gst" not in data:
+            try:
+                gst = float(text)
+            except:
+                gst = 0
+            final = calculate_final(data["item"], gst)
+            await update.message.reply_text(
+                f"💰 Final Price:\n"
+                f"Item: ₹{data['item']}\n"
+                f"GST: ₹{gst}\n"
+                f"➡️ Total: ₹{final}"
+            )
+            context.user_data.clear()
+            return
+
     # ===== ADMIN STATUS =====
     if uid in ADMINS and ADMINS[uid]["role"] == "admin":
         if text in ["Online ✅", "Offline ❌"]:
@@ -182,7 +214,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if context.user_data.get("payment_mode") == "prepaid" and "upi" not in data:
-            data["upi"] = text
+            data["upi"] = text  # any text accepted
             success = await finalize_order(context, uid)
             if success:
                 await update.message.reply_text("✅ Order placed (PREPAID)")
@@ -216,6 +248,7 @@ async def finalize_order(context, uid):
 
     await send_to_admin(context, token)
     context.user_data.clear()
+
     asyncio.create_task(auto_forward(context, token))
     return True
 
@@ -223,17 +256,12 @@ async def finalize_order(context, uid):
 # ================= AUTO FORWARD =================
 async def auto_forward(context, token):
     await asyncio.sleep(60)
-
     order = active_orders.get(token)
     if not order or order["status"] != "pending":
         return
 
     next_admin = get_next_admin()
     if not next_admin:
-        await context.bot.send_message(
-            order["customer"]["id"],
-            "❌ No admin online"
-        )
         del active_orders[token]
         return
 
@@ -295,10 +323,6 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "reject":
         next_admin = get_next_admin()
         if not next_admin:
-            await context.bot.send_message(
-                order["customer"]["id"],
-                "❌ No admin online"
-            )
             del active_orders[token]
             return
         order["assigned_admin"] = next_admin
