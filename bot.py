@@ -20,12 +20,16 @@ from config import BOT_TOKEN, MAIN_ADMIN_ID, BOT_NAME
 
 # ================= GLOBALS =================
 ADMINS = {
-    MAIN_ADMIN_ID: {"role": "main", "status": "online", "login_time": 0}
+    MAIN_ADMIN_ID: {"role": "main", "status": "online"}
 }
 
 token_counter = 0
 active_orders = {}
 tracking_wait = {}
+
+# round-robin pointer
+ADMIN_POINTER = 0
+
 
 # ================= HELPERS =================
 def generate_token():
@@ -33,17 +37,27 @@ def generate_token():
     token_counter += 1
     return token_counter
 
+
 def calculate_final(item, gst):
     return round((item * 0.5) + gst, 2)
 
+
 def online_admins():
-    return sorted(
-        [
-            aid for aid, info in ADMINS.items()
-            if info["role"] == "admin" and info["status"] == "online"
-        ],
-        key=lambda x: ADMINS[x]["login_time"]
-    )
+    return [
+        aid for aid, info in ADMINS.items()
+        if info["role"] == "admin" and info["status"] == "online"
+    ]
+
+
+def get_next_admin():
+    global ADMIN_POINTER
+    admins = online_admins()
+    if not admins:
+        return None
+    admin = admins[ADMIN_POINTER % len(admins)]
+    ADMIN_POINTER += 1
+    return admin
+
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,7 +72,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if uid in ADMINS:
-        ADMINS[uid]["login_time"] = asyncio.get_event_loop().time()
         kb = [["Online ✅", "Offline ❌"]]
         await update.message.reply_text(
             "👋 Admin Panel",
@@ -74,6 +87,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Welcome to {BOT_NAME}",
         reply_markup=InlineKeyboardMarkup(kb)
     )
+
 
 # ================= BUTTONS =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -99,6 +113,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("✅ Order placed (COD)")
         else:
             await q.message.reply_text("👛 Enter UPI ID:")
+
 
 # ================= MESSAGE HANDLER =================
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -137,7 +152,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "gst" not in data:
             try:
                 gst = float(text)
-                data["gst"] = gst
                 final = calculate_final(data["item"], gst)
                 await update.message.reply_text(
                     f"💰 Final Price:\n"
@@ -150,7 +164,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Enter valid GST")
             return
 
-    # ===== MAIN ADMIN CONTROLS =====
+    # ===== MAIN ADMIN =====
     if uid == MAIN_ADMIN_ID:
         if text == "Add New Admin ➕":
             context.user_data["add_admin"] = True
@@ -177,7 +191,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("add_admin"):
             try:
                 aid = int(text)
-                ADMINS[aid] = {"role": "admin", "status": "offline", "login_time": 0}
+                ADMINS[aid] = {"role": "admin", "status": "offline"}
                 await update.message.reply_text(f"✅ Admin added: {aid}")
             except:
                 await update.message.reply_text("❌ Invalid ID")
@@ -187,11 +201,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("remove_admin"):
             try:
                 aid = int(text)
-                if aid != MAIN_ADMIN_ID and aid in ADMINS:
+                if aid in ADMINS and aid != MAIN_ADMIN_ID:
                     del ADMINS[aid]
                     await update.message.reply_text(f"✅ Admin removed: {aid}")
-                else:
-                    await update.message.reply_text("❌ Cannot remove")
             except:
                 await update.message.reply_text("❌ Invalid ID")
             context.user_data.clear()
@@ -201,7 +213,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in ADMINS and ADMINS[uid]["role"] == "admin":
         if text in ["Online ✅", "Offline ❌"]:
             ADMINS[uid]["status"] = "online" if "Online" in text else "offline"
-            ADMINS[uid]["login_time"] = asyncio.get_event_loop().time()
             await update.message.reply_text("✅ Status updated", reply_markup=ReplyKeyboardRemove())
             return
 
@@ -234,7 +245,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "gst" not in data:
             try:
                 gst = float(text)
-                data["gst"] = gst
                 data["final"] = calculate_final(data["item"], gst)
                 kb = [[
                     InlineKeyboardButton("💵 COD", callback_data="cod"),
@@ -254,24 +264,21 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Order placed (PREPAID)")
             return
 
+
 # ================= FINALIZE ORDER =================
 async def finalize_order(context, uid):
-    data = context.user_data["data"]
-    token = generate_token()
-    admins = online_admins()
-
-    if not admins:
+    admin = get_next_admin()
+    if not admin:
         await context.bot.send_message(uid, "❌ No admin online")
         return
 
+    token = generate_token()
     chat = await context.bot.get_chat(uid)
+    data = context.user_data["data"]
 
     active_orders[token] = {
         "status": "pending",
-        "admins": admins,
-        "index": 0,
-        "assigned_admin": admins[0],
-        "forwarded": False,
+        "assigned_admin": admin,
         "customer": {
             "id": uid,
             "name": chat.full_name,
@@ -286,22 +293,26 @@ async def finalize_order(context, uid):
     await send_to_admin(context, token)
     context.user_data.clear()
 
-    asyncio.create_task(auto_forward_after_1min(context, token))
+    asyncio.create_task(auto_forward(context, token))
 
-# ================= AUTO FORWARD AFTER 1 MIN =================
-async def auto_forward_after_1min(context, token):
+
+# ================= AUTO FORWARD LOOP =================
+async def auto_forward(context, token):
     await asyncio.sleep(60)
 
     order = active_orders.get(token)
-    if not order:
+    if not order or order["status"] != "pending":
         return
 
-    if order["status"] == "pending" and not order["forwarded"]:
-        order["index"] = 1
-        if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][1]
-            order["forwarded"] = True
-            await send_to_admin(context, token)
+    next_admin = get_next_admin()
+    if not next_admin:
+        del active_orders[token]
+        return
+
+    order["assigned_admin"] = next_admin
+    await send_to_admin(context, token)
+    asyncio.create_task(auto_forward(context, token))
+
 
 # ================= SEND TO ADMIN =================
 async def send_to_admin(context, token):
@@ -333,6 +344,7 @@ async def send_to_admin(context, token):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
+
 # ================= ADMIN CALLBACKS =================
 async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -342,12 +354,8 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token = int(token)
     order = active_orders.get(token)
 
-    if not order:
+    if not order or q.from_user.id != order["assigned_admin"]:
         await q.message.reply_text("❌ Order expired")
-        return
-
-    if q.from_user.id != order["assigned_admin"]:
-        await q.message.reply_text("❌ Order expired / already forwarded")
         return
 
     if action == "accept":
@@ -357,17 +365,17 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Order accepted:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif action == "reject":
-        order["forwarded"] = True
-        order["index"] += 1
-        if order["index"] < len(order["admins"]):
-            order["assigned_admin"] = order["admins"][order["index"]]
-            await send_to_admin(context, token)
-        else:
+        next_admin = get_next_admin()
+        if not next_admin:
             del active_orders[token]
+            return
+        order["assigned_admin"] = next_admin
+        await send_to_admin(context, token)
 
     elif action == "complete":
         tracking_wait[q.from_user.id] = token
         await q.message.reply_text("🚚 Send tracking link:")
+
 
 # ================= MAIN =================
 if __name__ == "__main__":
