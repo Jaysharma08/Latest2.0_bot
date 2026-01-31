@@ -26,8 +26,6 @@ ADMINS = {
 token_counter = 0
 active_orders = {}
 tracking_wait = {}
-
-# round-robin pointer
 ADMIN_POINTER = 0
 
 
@@ -109,8 +107,9 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data in ["cod", "prepaid"]:
         context.user_data["payment_mode"] = q.data
         if q.data == "cod":
-            await finalize_order(context, q.from_user.id)
-            await q.message.reply_text("✅ Order placed (COD)")
+            success = await finalize_order(context, q.from_user.id)
+            if success:
+                await q.message.reply_text("✅ Order placed (COD)")
         else:
             await q.message.reply_text("👛 Enter UPI ID:")
 
@@ -132,82 +131,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(uid, f"✅ Token {token} completed")
             del active_orders[token]
         return
-
-    # ===== PRICE CHECKING =====
-    if context.user_data.get("mode") == "price":
-        data = context.user_data["data"]
-
-        if "item" not in data:
-            try:
-                item = float(text)
-                if item < 149:
-                    await update.message.reply_text("❌ Minimum item total is ₹149")
-                    return
-                data["item"] = item
-                await update.message.reply_text("🧾 Enter GST:")
-            except:
-                await update.message.reply_text("❌ Enter valid amount")
-            return
-
-        if "gst" not in data:
-            try:
-                gst = float(text)
-                final = calculate_final(data["item"], gst)
-                await update.message.reply_text(
-                    f"💰 Final Price:\n"
-                    f"Item: ₹{data['item']}\n"
-                    f"GST: ₹{gst}\n"
-                    f"➡️ Total: ₹{final}"
-                )
-                context.user_data.clear()
-            except:
-                await update.message.reply_text("❌ Enter valid GST")
-            return
-
-    # ===== MAIN ADMIN =====
-    if uid == MAIN_ADMIN_ID:
-        if text == "Add New Admin ➕":
-            context.user_data["add_admin"] = True
-            await update.message.reply_text("📩 Send Telegram User ID:")
-            return
-
-        if text == "Remove Admin ➖":
-            context.user_data["remove_admin"] = True
-            await update.message.reply_text("📩 Send Admin Telegram ID:")
-            return
-
-        if text == "📊 Admin Status":
-            online, offline = [], []
-            for aid, info in ADMINS.items():
-                if info["role"] == "admin":
-                    (online if info["status"] == "online" else offline).append(str(aid))
-
-            msg = "📊 *Admin Status*\n\n"
-            msg += f"🟢 Online ({len(online)})\n" + ("\n".join(online) or "None")
-            msg += f"\n\n🔴 Offline ({len(offline)})\n" + ("\n".join(offline) or "None")
-            await update.message.reply_text(msg, parse_mode="Markdown")
-            return
-
-        if context.user_data.get("add_admin"):
-            try:
-                aid = int(text)
-                ADMINS[aid] = {"role": "admin", "status": "offline"}
-                await update.message.reply_text(f"✅ Admin added: {aid}")
-            except:
-                await update.message.reply_text("❌ Invalid ID")
-            context.user_data.clear()
-            return
-
-        if context.user_data.get("remove_admin"):
-            try:
-                aid = int(text)
-                if aid in ADMINS and aid != MAIN_ADMIN_ID:
-                    del ADMINS[aid]
-                    await update.message.reply_text(f"✅ Admin removed: {aid}")
-            except:
-                await update.message.reply_text("❌ Invalid ID")
-            context.user_data.clear()
-            return
 
     # ===== ADMIN STATUS =====
     if uid in ADMINS and ADMINS[uid]["role"] == "admin":
@@ -245,23 +168,24 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "gst" not in data:
             try:
                 gst = float(text)
-                data["final"] = calculate_final(data["item"], gst)
-                kb = [[
-                    InlineKeyboardButton("💵 COD", callback_data="cod"),
-                    InlineKeyboardButton("💳 PREPAID", callback_data="prepaid"),
-                ]]
-                await update.message.reply_text(
-                    f"💰 Total: ₹{data['final']}\nChoose payment:",
-                    reply_markup=InlineKeyboardMarkup(kb)
-                )
             except:
-                await update.message.reply_text("❌ Enter valid GST")
+                gst = 0
+            data["final"] = calculate_final(data["item"], gst)
+            kb = [[
+                InlineKeyboardButton("💵 COD", callback_data="cod"),
+                InlineKeyboardButton("💳 PREPAID", callback_data="prepaid"),
+            ]]
+            await update.message.reply_text(
+                f"💰 Total: ₹{data['final']}\nChoose payment:",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
             return
 
         if context.user_data.get("payment_mode") == "prepaid" and "upi" not in data:
             data["upi"] = text
-            await finalize_order(context, uid)
-            await update.message.reply_text("✅ Order placed (PREPAID)")
+            success = await finalize_order(context, uid)
+            if success:
+                await update.message.reply_text("✅ Order placed (PREPAID)")
             return
 
 
@@ -270,7 +194,7 @@ async def finalize_order(context, uid):
     admin = get_next_admin()
     if not admin:
         await context.bot.send_message(uid, "❌ No admin online")
-        return
+        return False
 
     token = generate_token()
     chat = await context.bot.get_chat(uid)
@@ -292,11 +216,11 @@ async def finalize_order(context, uid):
 
     await send_to_admin(context, token)
     context.user_data.clear()
-
     asyncio.create_task(auto_forward(context, token))
+    return True
 
 
-# ================= AUTO FORWARD LOOP =================
+# ================= AUTO FORWARD =================
 async def auto_forward(context, token):
     await asyncio.sleep(60)
 
@@ -306,6 +230,10 @@ async def auto_forward(context, token):
 
     next_admin = get_next_admin()
     if not next_admin:
+        await context.bot.send_message(
+            order["customer"]["id"],
+            "❌ No admin online"
+        )
         del active_orders[token]
         return
 
@@ -367,6 +295,10 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "reject":
         next_admin = get_next_admin()
         if not next_admin:
+            await context.bot.send_message(
+                order["customer"]["id"],
+                "❌ No admin online"
+            )
             del active_orders[token]
             return
         order["assigned_admin"] = next_admin
