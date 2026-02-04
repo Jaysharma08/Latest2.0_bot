@@ -19,14 +19,14 @@ from config import BOT_TOKEN, MAIN_ADMIN_ID, BOT_NAME
 
 # ================= GLOBALS =================
 ADMINS = {
-    MAIN_ADMIN_ID: {"role": "main", "status": "online", "login_time": 0}
+    int(MAIN_ADMIN_ID): {"role": "main", "status": "online", "login_time": 0}
 }
 
 token_counter = 0
 active_orders = {}
 tracking_wait = {}
-current_admin_turn = 0  # Global tracker for Round Robin
-CHAT_SESSIONS = {} # NEW: Connects Admin <-> Customer for chatting
+current_admin_turn = 0  
+CHAT_SESSIONS = {} # Bridge for Admin <-> Customer Chat
 
 # ================= HELPERS =================
 def generate_token():
@@ -38,7 +38,6 @@ def calculate_final(item, gst):
     return round((item * 0.5) + gst, 2)
 
 def get_online_admins():
-    """Returns list of IDs of admins who are marked 'online'"""
     return [
         aid for aid, info in ADMINS.items()
         if info.get("role") == "admin" and info.get("status") == "online"
@@ -48,7 +47,7 @@ def get_online_admins():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
-    if uid == MAIN_ADMIN_ID:
+    if uid == int(MAIN_ADMIN_ID):
         kb = [["Add New Admin ➕", "Remove Admin ➖"], ["📊 Admin Status"]]
         await update.message.reply_text(
             "👑 Main Admin Panel",
@@ -103,15 +102,15 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip() if update.message.text else ""
 
-    # ===== CHAT OPTION (BRIDGE) =====
+    # ===== CHAT BRIDGE =====
     if uid in CHAT_SESSIONS:
-        recipient = CHAT_SESSIONS[uid]
-        label = "👨‍💻 Admin" if (uid in ADMINS or uid == MAIN_ADMIN_ID) else "👤 Customer"
+        target = CHAT_SESSIONS[uid]
+        label = "👨‍💻 Admin" if (uid in ADMINS or uid == int(MAIN_ADMIN_ID)) else "👤 Customer"
         
         if update.message.text:
-            await context.bot.send_message(recipient, f"💬 *{label}:*\n{text}", parse_mode="Markdown")
+            await context.bot.send_message(target, f"💬 *{label}:*\n{text}", parse_mode="Markdown")
         elif update.message.photo:
-            await context.bot.send_photo(recipient, update.message.photo[-1].file_id, caption=f"💬 *{label} sent a photo*", parse_mode="Markdown")
+            await context.bot.send_photo(target, update.message.photo[-1].file_id, caption=f"💬 *{label} sent a photo*", parse_mode="Markdown")
         return
 
     # ===== TRACKING =====
@@ -119,16 +118,15 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         token = tracking_wait.pop(uid)
         order = active_orders.get(token)
         if order:
-            # Auto-close chat when order is finished
             cust_id = order["customer"]["id"]
             CHAT_SESSIONS.pop(uid, None)
             CHAT_SESSIONS.pop(cust_id, None)
 
             await context.bot.send_message(
-                order["customer"]["id"],
+                cust_id,
                 f"🚚 Your tracking link:\n{text}\n\n🙏 Thank you for ordering with {BOT_NAME}!"
             )
-            await context.bot.send_message(uid, f"✅ Token {token} completed and Chat closed.")
+            await context.bot.send_message(uid, f"✅ Token {token} completed. Chat closed.")
             del active_orders[token]
         return
 
@@ -158,7 +156,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ===== MAIN ADMIN CONTROLS =====
-    if uid == MAIN_ADMIN_ID:
+    if uid == int(MAIN_ADMIN_ID):
         if text == "Add New Admin ➕":
             context.user_data["add_admin"] = True
             await update.message.reply_text("📩 Send Telegram User ID:")
@@ -185,7 +183,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("remove_admin"):
             try:
                 aid = int(text)
-                if aid != MAIN_ADMIN_ID and aid in ADMINS:
+                if aid != int(MAIN_ADMIN_ID) and aid in ADMINS:
                     del ADMINS[aid]
                     await update.message.reply_text(f"✅ Admin removed: {aid}")
                 else: await update.message.reply_text("❌ Cannot remove")
@@ -248,7 +246,6 @@ async def finalize_order(context, uid):
         context.user_data.clear()
         return
 
-    # Select Admin via Round Robin
     assigned_idx = current_admin_turn % len(admins)
     assigned_admin = admins[assigned_idx]
     current_admin_turn += 1 
@@ -259,7 +256,6 @@ async def finalize_order(context, uid):
         "admins": admins, 
         "index": assigned_idx, 
         "assigned_admin": assigned_admin,
-        "forwarded": False,
         "customer": {
             "id": uid,
             "name": chat.full_name,
@@ -272,7 +268,7 @@ async def finalize_order(context, uid):
     }
 
     pm = context.user_data.get("payment_mode", "N/A").upper()
-    await context.bot.send_message(uid, f"✅ Order placed ({pm}). Admin will contact you shortly via chat.")
+    await context.bot.send_message(uid, f"✅ Order placed ({pm}). Admin will message you here.")
     await send_to_admin(context, token)
     context.user_data.clear()
 
@@ -319,11 +315,11 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = active_orders.get(token)
 
     if not order:
-        await q.message.edit_caption("❌ Order expired or already completed")
+        await q.message.edit_caption("❌ Order expired")
         return
 
     if q.from_user.id != order["assigned_admin"]:
-        await q.message.reply_text("❌ Order expired / already forwarded")
+        await q.message.reply_text("❌ Not assigned to you")
         return
 
     if action == "accept":
@@ -331,13 +327,13 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_id = q.from_user.id
         cust_id = order["customer"]["id"]
         
-        # LINK CHAT
+        # ACTIVATE CHAT
         CHAT_SESSIONS[admin_id] = cust_id
         CHAT_SESSIONS[cust_id] = admin_id
 
-        await context.bot.send_message(cust_id, "✅ Your order is accepted! You can now chat here.")
+        await context.bot.send_message(cust_id, "✅ Order accepted! You can now chat with the admin.")
         kb = [[InlineKeyboardButton("Complete Order 📦", callback_data=f"complete_{token}")]]
-        await q.message.reply_text(f"✅ You accepted Token {token}. Chat is OPEN.", reply_markup=InlineKeyboardMarkup(kb))
+        await q.message.reply_text(f"✅ Token {token} Accepted. Chat ACTIVE.", reply_markup=InlineKeyboardMarkup(kb))
 
     elif action == "reject":
         order["index"] = (order["index"] + 1) % len(order["admins"])
@@ -347,7 +343,7 @@ async def admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "complete":
         tracking_wait[q.from_user.id] = token
-        await q.message.reply_text("🚚 Send tracking link (This will close the chat):")
+        await q.message.reply_text("🚚 Send tracking link to finish:")
 
 # ================= MAIN =================
 if __name__ == "__main__":
